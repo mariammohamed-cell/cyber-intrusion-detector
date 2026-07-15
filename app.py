@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import os
 from pathlib import Path
 from typing import Any
 
@@ -237,14 +238,40 @@ def escape_text(value: Any) -> str:
     return html.escape(str(value))
 
 
-def find_file(filename: str) -> Path | None:
-    candidates = [
+def file_candidates(filename: str, allow_csv_variants: bool = False) -> list[Path]:
+    directories = [
         APP_DIR / filename,
         Path.cwd() / filename,
         Path.home() / "Downloads" / filename,
+        Path(os.path.expandvars(r"%USERPROFILE%\Downloads")) / filename,
+        Path(r"C:\Users\hp\Downloads") / filename,
         Path.home() / "Desktop" / filename,
     ]
-    for path in candidates:
+
+    candidates: list[Path] = []
+    for path in directories:
+        if path not in candidates:
+            candidates.append(path)
+
+    if allow_csv_variants and filename.lower().endswith(".csv"):
+        stem = Path(filename).stem
+        for folder in [
+            APP_DIR,
+            Path.cwd(),
+            Path.home() / "Downloads",
+            Path(os.path.expandvars(r"%USERPROFILE%\Downloads")),
+            Path(r"C:\Users\hp\Downloads"),
+        ]:
+            if folder.exists():
+                for variant in sorted(folder.glob(f"{stem}*.csv")):
+                    if variant not in candidates:
+                        candidates.append(variant)
+
+    return candidates
+
+
+def find_file(filename: str, allow_csv_variants: bool = False) -> Path | None:
+    for path in file_candidates(filename, allow_csv_variants):
         if path.exists():
             return path
     return None
@@ -283,7 +310,7 @@ def load_artifacts() -> tuple[dict[str, Any] | None, dict[str, Path | None], lis
 
 @st.cache_data(show_spinner=False)
 def load_default_dataset() -> tuple[pd.DataFrame | None, str | None]:
-    path = find_file(DEFAULT_DATASET)
+    path = find_file(DEFAULT_DATASET, allow_csv_variants=True)
     if path is None:
         return None, None
     return pd.read_csv(path), str(path)
