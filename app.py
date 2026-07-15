@@ -469,7 +469,7 @@ def render_sidebar(paths: dict[str, Path | None], missing: list[str], load_error
 
     return st.sidebar.radio(
         "Navigation",
-        ["Overview", "Prediction Lab", "Batch Analysis", "Model Insights", "Data Explorer"],
+        ["Prediction Lab", "Model Insights"],
         label_visibility="visible",
     )
 
@@ -498,99 +498,6 @@ def altair_bar(data: pd.DataFrame, x: str, y: str, color: str | None = None, hei
         .properties(height=height)
     )
     st.altair_chart(chart, use_container_width=True)
-
-
-def altair_donut(data: pd.DataFrame, label_col: str, value_col: str, height: int = 280) -> None:
-    if alt is None:
-        st.bar_chart(data.set_index(label_col)[value_col])
-        return
-
-    chart = (
-        alt.Chart(data)
-        .mark_arc(innerRadius=72, outerRadius=118)
-        .encode(
-            theta=alt.Theta(f"{value_col}:Q"),
-            color=alt.Color(
-                f"{label_col}:N",
-                scale=alt.Scale(range=["#22c55e", "#ef4444", "#22d3ee", "#f59e0b"]),
-                legend=alt.Legend(title=None, orient="bottom"),
-            ),
-            tooltip=[alt.Tooltip(f"{label_col}:N"), alt.Tooltip(f"{value_col}:Q", format=",")],
-        )
-        .properties(height=height)
-    )
-    st.altair_chart(chart, use_container_width=True)
-
-
-def altair_line(data: pd.DataFrame, x: str, y: str, height: int = 280) -> None:
-    if alt is None:
-        st.line_chart(data.set_index(x)[y])
-        return
-
-    chart = (
-        alt.Chart(data)
-        .mark_line(point=True, strokeWidth=2.5, color="#22d3ee")
-        .encode(
-            x=alt.X(f"{x}:O", title="Session batch"),
-            y=alt.Y(f"{y}:Q", title="Attack rate", axis=alt.Axis(format="%")),
-            tooltip=[alt.Tooltip(f"{x}:O", title="Batch"), alt.Tooltip(f"{y}:Q", title="Attack rate", format=".1%")],
-        )
-        .properties(height=height)
-    )
-    st.altair_chart(chart, use_container_width=True)
-
-
-def dataset_with_labels(df: pd.DataFrame) -> pd.DataFrame:
-    labeled = df.copy()
-    if "attack_detected" in labeled.columns:
-        labeled["traffic_label"] = np.where(labeled["attack_detected"].astype(int) == 1, "Attack", "Normal")
-    return labeled
-
-
-def overview_page(df: pd.DataFrame | None) -> None:
-    st.subheader("Operations Overview")
-    if df is None:
-        st.info("Default dataset was not found. Upload a CSV in Batch Analysis to inspect traffic.")
-        return
-
-    labeled = dataset_with_labels(df)
-    total = len(labeled)
-    attacks = int(labeled["attack_detected"].sum()) if "attack_detected" in labeled.columns else 0
-    normal = total - attacks
-    attack_rate = attacks / total if total else 0
-    missing_encryption = int(labeled["encryption_used"].isna().sum()) if "encryption_used" in labeled.columns else 0
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        metric_card("Total Sessions", f"{total:,}", "Rows available for inspection", "cyan")
-    with col2:
-        metric_card("Detected Attacks", f"{attacks:,}", f"{attack_rate:.1%} attack rate", "red")
-    with col3:
-        metric_card("Normal Traffic", f"{normal:,}", "Baseline sessions", "green")
-    with col4:
-        metric_card("Missing Encryption", f"{missing_encryption:,}", "Filled during preprocessing", "amber")
-
-    chart_col1, chart_col2 = st.columns((1, 1))
-    with chart_col1:
-        st.markdown("#### Traffic Split")
-        split = labeled["traffic_label"].value_counts().rename_axis("label").reset_index(name="sessions")
-        altair_donut(split, "label", "sessions")
-
-    with chart_col2:
-        st.markdown("#### Attack Rate by Protocol")
-        protocol = (
-            labeled.groupby("protocol_type", dropna=False)
-            .agg(sessions=("attack_detected", "size"), attack_rate=("attack_detected", "mean"))
-            .reset_index()
-        )
-        protocol["attack_rate"] = protocol["attack_rate"] * 100
-        altair_bar(protocol, "protocol_type", "attack_rate", "protocol_type")
-
-    st.markdown("#### Activity Trend by Session Batch")
-    trend = labeled.reset_index(names="row_id")
-    trend["batch"] = (trend["row_id"] // 250) + 1
-    trend = trend.groupby("batch", as_index=False)["attack_detected"].mean()
-    altair_line(trend, "batch", "attack_detected")
 
 
 def prediction_page(artifacts: dict[str, Any] | None) -> None:
@@ -659,68 +566,6 @@ def prediction_page(artifacts: dict[str, Any] | None) -> None:
                 )
         except Exception as exc:
             st.error(f"Prediction failed: {exc}")
-
-
-def batch_page(df: pd.DataFrame | None, artifacts: dict[str, Any] | None) -> None:
-    st.subheader("Batch Analysis")
-    uploaded = st.file_uploader("Upload traffic CSV", type=["csv"])
-    source_name = "Uploaded CSV" if uploaded is not None else "Default dataset"
-
-    if uploaded is not None:
-        batch_df = pd.read_csv(uploaded)
-    else:
-        batch_df = df
-
-    if batch_df is None:
-        st.info("No dataset is available. Upload a CSV with the required traffic columns.")
-        return
-
-    st.caption(f"Source: {source_name} | Rows: {len(batch_df):,}")
-    missing = validate_raw_columns(batch_df)
-    if missing:
-        st.error("The selected CSV is missing required columns: " + ", ".join(missing))
-        return
-
-    preview_cols = [column for column in ["session_id", *RAW_FEATURES, "attack_detected"] if column in batch_df.columns]
-    st.dataframe(batch_df[preview_cols].head(30), use_container_width=True, hide_index=True)
-
-    if artifacts is None:
-        st.warning("Model artifacts are not available. Batch predictions cannot run yet.")
-        return
-
-    if st.button("Run Batch Detection", use_container_width=True):
-        try:
-            results = predict_dataframe(batch_df, artifacts)
-            attack_count = int((results["prediction"] == "Attack").sum())
-            avg_risk = float(results["risk_score"].mean())
-            critical_count = int((results["risk_level"] == "Critical").sum())
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                metric_card("Predicted Attacks", f"{attack_count:,}", "Sessions flagged by the model", "red")
-            with col2:
-                metric_card("Average Risk", f"{avg_risk:.2f}%", "Mean attack probability", "amber")
-            with col3:
-                metric_card("Critical Sessions", f"{critical_count:,}", "Risk score at or above 85%", "violet")
-
-            st.markdown("#### Prediction Distribution")
-            distribution = results["prediction"].value_counts().rename_axis("prediction").reset_index(name="sessions")
-            altair_donut(distribution, "prediction", "sessions")
-
-            st.markdown("#### Highest Risk Sessions")
-            ordered = results.sort_values("risk_score", ascending=False)
-            display_cols = [column for column in ["session_id", "prediction", "risk_score", "risk_level", *RAW_FEATURES] if column in ordered.columns]
-            st.dataframe(ordered[display_cols].head(100), use_container_width=True, hide_index=True)
-
-            st.download_button(
-                "Download Predictions CSV",
-                data=results.to_csv(index=False).encode("utf-8"),
-                file_name="cybershield_predictions.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-        except Exception as exc:
-            st.error(f"Batch detection failed: {exc}")
 
 
 def model_insights_page(df: pd.DataFrame | None, artifacts: dict[str, Any] | None) -> None:
@@ -793,47 +638,6 @@ def model_insights_page(df: pd.DataFrame | None, artifacts: dict[str, Any] | Non
             st.dataframe(pd.DataFrame({"column": artifacts["model_columns"]}), use_container_width=True, hide_index=True)
 
 
-def data_explorer_page(df: pd.DataFrame | None) -> None:
-    st.subheader("Data Explorer")
-    if df is None:
-        st.info("Default dataset was not found.")
-        return
-
-    labeled = dataset_with_labels(df)
-    filters = st.columns(3)
-    with filters[0]:
-        protocol_options = ["All"] + sorted(labeled["protocol_type"].dropna().unique().tolist())
-        selected_protocol = st.selectbox("Protocol", protocol_options)
-    with filters[1]:
-        browser_options = ["All"] + sorted(labeled["browser_type"].dropna().unique().tolist())
-        selected_browser = st.selectbox("Browser", browser_options)
-    with filters[2]:
-        label_options = ["All", "Normal", "Attack"]
-        selected_label = st.selectbox("Traffic label", label_options)
-
-    filtered = labeled.copy()
-    if selected_protocol != "All":
-        filtered = filtered[filtered["protocol_type"] == selected_protocol]
-    if selected_browser != "All":
-        filtered = filtered[filtered["browser_type"] == selected_browser]
-    if selected_label != "All" and "traffic_label" in filtered.columns:
-        filtered = filtered[filtered["traffic_label"] == selected_label]
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        metric_card("Filtered Rows", f"{len(filtered):,}", "Rows after current filters", "cyan")
-    with col2:
-        if "attack_detected" in filtered.columns and len(filtered) > 0:
-            metric_card("Attack Rate", f"{filtered['attack_detected'].mean():.2%}", "Filtered traffic", "red")
-        else:
-            metric_card("Attack Rate", "N/A", "No labels available", "amber")
-    with col3:
-        median_duration = float(filtered["session_duration"].median()) if len(filtered) else 0.0
-        metric_card("Median Duration", f"{median_duration:.1f}", "Session duration", "violet")
-
-    st.dataframe(filtered.head(500), use_container_width=True, hide_index=True)
-
-
 def main() -> None:
     inject_css()
     artifacts, paths, missing, load_error = load_artifacts()
@@ -844,16 +648,10 @@ def main() -> None:
     if dataset_path:
         st.caption(f"Dataset loaded from: {dataset_path}")
 
-    if page == "Overview":
-        overview_page(default_df)
-    elif page == "Prediction Lab":
+    if page == "Prediction Lab":
         prediction_page(artifacts)
-    elif page == "Batch Analysis":
-        batch_page(default_df, artifacts)
     elif page == "Model Insights":
         model_insights_page(default_df, artifacts)
-    elif page == "Data Explorer":
-        data_explorer_page(default_df)
 
 
 if __name__ == "__main__":
