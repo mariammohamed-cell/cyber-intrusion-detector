@@ -1,4 +1,3 @@
-[ML readme.md](https://github.com/user-attachments/files/30148938/ML.readme.md)
 # CyberShield IDS — Traffic Intelligence Console
 
 CyberShield IDS is an interactive Intrusion Detection System (IDS) web application built using Streamlit. It leverages a pre-trained Machine Learning model (Random Forest) to evaluate real-time network session metrics, score potential vulnerabilities, and expose analytical model insights.
